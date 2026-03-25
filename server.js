@@ -10,7 +10,8 @@ const http               = require("http");
 const { WebSocketServer } = require("ws");
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const PORT         = 8443;
+//const PORT         = 8443;
+const PORT = process.env.PORT || 8443;
 const HEARTBEAT_MS = 5000;
 // ─────────────────────────────────────────────────────────────────────────────
 
