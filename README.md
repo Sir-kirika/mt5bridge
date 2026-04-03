@@ -219,8 +219,6 @@ The compiled DLL file (`mt5WebServerLiveDll.dll`) must be placed in MT5's Librar
 3. Navigate to `MQL5\Libraries\`
 4. Paste `mt5WebServerLiveDll.dll` here
 
-> **Note:** MT5 must be fully closed before replacing the DLL.  
-> If MT5 is open, it locks the DLL file and the new version will not load.
 
 The DLL connects to the Node.js server via WebSocket. It is imported automatically by the EA — no manual loading required.
 
