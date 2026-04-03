@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MT5 Momentum Dashboard</title>
+<style>
+  /* ── Reset & base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #0d0f14;
+    color: #c8ccd8;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px;
+  }
+
+  h1 {
+    font-size: 18px;
+    font-weight: 500;
+    color: #e2e4ed;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+  }
+
+  /* ── Status bar ── */
+  #status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+    font-size: 12px;
+    color: #6b7280;
+  }
+  #status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #374151;
+    transition: background 0.4s;
+  }
+  #status-dot.live    { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
+  #status-dot.stale   { background: #f59e0b; }
+  #status-dot.offline { background: #ef4444; }
+
+  /* ── Table wrapper ── */
+  .table-wrap {
+    width: 100%;
+    max-width: 720px;
+    overflow-x: auto;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  /* Header */
+  thead th {
+    background: #161a23;
+    color: #8b92a8;
+    font-weight: 500;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 10px 12px;
+    text-align: right;
+    border-bottom: 1px solid #1f2430;
+  }
+  thead th:first-child { text-align: left; }
+
+  /* Rows */
+  tbody tr {
+    border-bottom: 1px solid #1a1f2b;
+    transition: background 0.15s;
+  }
+  tbody tr:hover { background: #161a23; }
+
+  tbody td {
+    padding: 9px 12px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    transition: color 0.3s, background 0.3s;
+  }
+  tbody td:first-child {
+    text-align: left;
+    font-weight: 500;
+    color: #d1d5e0;
+    letter-spacing: 0.03em;
+  }
+
+  /* Cell colors — match MT5 dashboard */
+  td.clrGreen     { color: #4ade80; }
+  td.clrRed       { color: #f87171; }
+  td.clrSteelBlue { color: #7eb8f7; }
+
+  /* Sum column slightly bolder */
+  td.sum-col { font-weight: 500; }
+
+  /* Flash animation when value updates */
+  @keyframes flash {
+    0%   { opacity: 0.35; }
+    100% { opacity: 1;    }
+  }
+  td.updated { animation: flash 0.4s ease-out; }
+
+  /* ── Footer ── */
+  #footer {
+    margin-top: 16px;
+    font-size: 11px;
+    color: #374151;
+    text-align: center;
+  }
+
+  /* ── No-data state ── */
+  #no-data {
+    margin-top: 40px;
+    color: #374151;
+    font-size: 13px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<h1>Momentum Index Dashboard</h1>
+
+<div id="status-bar">
+  <div id="status-dot"></div>
+  <span id="status-text">Connecting…</span>
+  <span id="last-update"></span>
+</div>
+
+<div class="table-wrap">
+  <table id="dash-table">
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th id="th-tf0">M1</th>
+        <th id="th-tf1">M5</th>
+        <th id="th-tf2">M15</th>
+        <th>Sum</th>
+      </tr>
+    </thead>
+    <tbody id="dash-body">
+      <!-- rows injected by JS -->
+    </tbody>
+  </table>
+</div>
+
+<div id="no-data">Waiting for MT5 data…</div>
+
+<div id="footer">
+  MT5 Bridge &nbsp;|&nbsp; <span id="src-label">—</span>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+// For local dev (same machine as the Node server):
+//const SSE_URL = "http://127.0.0.1:8443/stream";   //use this if you are testing locally
+// Replace with your tunnel URL when accessing from outside, e.g.:
+//   const SSE_URL = "https://abc123.ngrok.io/stream";
+//const SSE_URL = "https://trips-screensaver-layer-acc.trycloudflare.com/stream";
+const SSE_URL = "https://mt5bridge.onrender.com/stream";
+
+                 
+// ─────────────────────────────────────────────────────────────────────────────
+
+const dot        = document.getElementById("status-dot");
+const statusText = document.getElementById("status-text");
+const lastUpdate = document.getElementById("last-update");
+const tbody      = document.getElementById("dash-body");
+const noData     = document.getElementById("no-data");
+const srcLabel   = document.getElementById("src-label");
+
+let staleTimer = null;
+
+// ── Row cache: symbol → { td references } ─────────────────────────────────────
+const rowCache = {};
+
+function ensureRow(symbol, timeframes) {
+  if (rowCache[symbol]) return rowCache[symbol];
+
+  const tr = document.createElement("tr");
+
+  // Symbol cell
+  const tdSym = document.createElement("td");
+  tdSym.textContent = symbol;
+  tr.appendChild(tdSym);
+
+  // TF cells
+  const tfCells = [];
+  for (let i = 0; i < timeframes.length; i++) {
+    const td = document.createElement("td");
+    tr.appendChild(td);
+    tfCells.push(td);
+  }
+
+  // Sum cell
+  const tdSum = document.createElement("td");
+  tdSum.classList.add("sum-col");
+  tr.appendChild(tdSum);
+
+  tbody.appendChild(tr);
+
+  rowCache[symbol] = { tr, tdSym, tfCells, tdSum };
+  return rowCache[symbol];
+}
+
+function setCell(td, value, colorClass) {
+  const formatted = (typeof value === "number") ? value.toFixed(2) : value;
+
+  // Only flash if value actually changed
+  if (td.textContent !== formatted) {
+    td.textContent = formatted;
+    td.className = colorClass || "";
+    td.classList.add("updated");
+    td.addEventListener("animationend", () => td.classList.remove("updated"), { once: true });
+  }
+}
+
+// ── Process incoming MT5 frame ─────────────────────────────────────────────────
+function processFrame(data) {
+  noData.style.display = "none";
+
+  // Update source label
+  if (data.src) srcLabel.textContent = data.src;
+
+  const symbols = data.symbols;
+  if (!Array.isArray(symbols) || symbols.length === 0) return;
+
+  // Derive timeframe list from first symbol's TF_data
+  const tfData0 = symbols[0].TF_data;
+  if (!Array.isArray(tfData0)) return;
+
+  // TF names from keys of each TF_data entry (exclude cell_color key)
+  const tfNames = tfData0.map(tfObj =>
+    Object.keys(tfObj).find(k => k !== "cell_color")
+  ).filter(Boolean);
+
+  // Update header TF labels in case they differ from defaults
+  tfNames.forEach((name, i) => {
+    const th = document.getElementById(`th-tf${i}`);
+    if (th) th.textContent = name;
+  });
+
+  for (const sym of symbols) {
+    const row = ensureRow(sym.pair, tfNames);
+
+    sym.TF_data.forEach((tfObj, i) => {
+      const tfKey   = tfNames[i];
+      const val     = tfObj[tfKey];
+      const color   = tfObj.cell_color || "clrSteelBlue";
+      if (row.tfCells[i]) setCell(row.tfCells[i], val, color);
+    });
+
+    setCell(row.tdSum, sym.sum, sym.sum_cell_color || "clrSteelBlue");
+  }
+
+  // Status: live
+  dot.className      = "live";
+  statusText.textContent = "Live";
+  const ts = data._serverTs ? new Date(data._serverTs) : new Date();
+  lastUpdate.textContent = `· Updated ${ts.toLocaleTimeString()}`;
+
+  // Mark stale after 70s (a bit longer than M1 candle close)
+  clearTimeout(staleTimer);
+  staleTimer = setTimeout(() => {
+    dot.className      = "stale";
+    statusText.textContent = "Stale";
+  }, 70_000);
+}
+
+// ── SSE connection ─────────────────────────────────────────────────────────────
+let es;
+let reconnectDelay = 3000;
+
+function connect() {
+  dot.className      = "";
+  statusText.textContent = "Connecting…";
+
+  es = new EventSource(SSE_URL);
+
+  es.onopen = () => {
+    reconnectDelay = 3000; // reset backoff on success
+    console.log("[SSE] Connected");
+  };
+
+  es.onmessage = (event) => {
+    if (!event.data || event.data.startsWith(":")) return; // skip keep-alive comments
+    try {
+      const data = JSON.parse(event.data);
+      processFrame(data);
+    } catch (e) {
+      console.warn("[SSE] JSON parse error:", e);
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    dot.className      = "offline";
+    statusText.textContent = "Offline — reconnecting…";
+    console.warn(`[SSE] Connection lost. Retrying in ${reconnectDelay}ms`);
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 30_000); // exponential backoff, cap 30s
+  };
+}
+
+connect();
+
+// Show no-data message if nothing arrives in first 5s
+setTimeout(() => {
+  if (tbody.children.length === 0) noData.style.display = "block";
+}, 5000);
+</script>
+</body>
+</html>
