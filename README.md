@@ -14,6 +14,7 @@ The pipeline is: **MT5 EA → DLL → Node.js Server → SSE → Browser**.
 5. [Ports Reference](#ports-reference)
 6. [Running Locally vs Online](#running-locally-vs-online)
 7. [Quick Start Checklist](#quick-start-checklist)
+8. [Dashboard HTML Setup](#dashboard-html-setup)
 
 ---
 
@@ -23,14 +24,16 @@ The pipeline is: **MT5 EA → DLL → Node.js Server → SSE → Browser**.
 MT5 Terminal
   └── EA (MQL5)
         └── DLL (mt5WebServerLiveDll.dll)
-              └── WebSocket (WS/WSS) ──► Node.js server (server.js)
-                                                └── SSE /stream ──► Website / Browser
+              └── WebSocket (WSS) ──► Node.js server (server.js)
+                                              └── SSE /stream ──► Website / Browser
 ```
 
 - **MT5 EA** computes the momentum scores and calls the DLL on every candle close (or tick).
 - **DLL** maintains a persistent WebSocket connection to the Node.js server.
 - **Node.js server** receives the data and broadcasts it to all connected browsers via Server-Sent Events (SSE).
 - **Browser** connects to `/stream` and renders the live dashboard table.
+
+> **One DLL for all modes:** `mt5WebServerLiveDll.dll` (compiled with `USE_TLS=1`) works for both local and remote connections. Local mode uses a self-signed certificate. Remote mode (Render/Cloudflare) uses their CA-signed certificates.
 
 ---
 
@@ -42,7 +45,8 @@ MT5 Terminal
 |-----|---------|----------|
 | Node.js (LTS) | Runs the server | https://nodejs.org |
 | Git | Version control / deployment | https://git-scm.com/download/win |
-| cloudflared *(local mode only)* | Exposes local server to internet | https://github.com/cloudflare/cloudflared/releases |
+| OpenSSL 3.x (Win64) | Generate local self-signed cert | https://slproweb.com/products/Win32OpenSSL.html |
+| cloudflared *(optional)* | Exposes local server to internet | https://github.com/cloudflare/cloudflared/releases |
 
 ---
 
@@ -84,45 +88,71 @@ This creates `package.json` and downloads the WebSocket library into `node_modul
 
 ---
 
-### Step 4 — Run the server
+### Step 4 — Generate self-signed certificate (local mode only)
+
+The server uses WSS (secure WebSocket) locally via a self-signed certificate. Generate it once — it lasts 10 years.
+
+Open **PowerShell** in `C:\MT5Bridge\` and run:
+
+```powershell
+& "C:\Program Files\OpenSSL-Win64\bin\openssl.exe" req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 3650 -nodes -subj "/CN=localhost"
+```
+
+Confirm both files were created:
+
+```powershell
+dir C:\MT5Bridge\*.pem
+```
+
+You should see `cert.pem` and `key.pem`. These files must stay in `C:\MT5Bridge\` alongside `server.js`.
+
+> **Note:** These cert files are only needed for local mode. On Render, TLS is handled externally and no cert files are needed.
+
+---
+
+### Step 5 — Run the server
 
 ```cmd
 node server.js
 ```
 
-You should see:
+**Local mode** output (when `cert.pem` and `key.pem` are present):
 
 ```
 ╔══════════════════════════════════════════════════╗
-║         MT5 Dashboard Bridge — RUNNING           ║
+║      MT5 Dashboard Bridge — LOCAL WSS MODE       ║
 ╠══════════════════════════════════════════════════╣
-║  WS  (MT5 DLL)  →  ws://127.0.0.1:8443/ws
-║  SSE (website)  →  http://127.0.0.1:8443/stream
-║  Health         →  http://127.0.0.1:8443/health
+║  WSS (MT5 DLL)  →  wss://127.0.0.1:8443
+║  SSE (browser)  →  https://127.0.0.1:8443/stream
+║  Health         →  https://127.0.0.1:8443/health
 ╚══════════════════════════════════════════════════╝
 ```
+
+If cert files are missing, the server will print the exact OpenSSL command and exit — go back to Step 4.
 
 > **Important:** Keep this terminal window open. Closing it stops the server.
 
 ---
 
-### Step 5 — Verify the server is running
+### Step 6 — Verify the server is running
 
 Open your browser and navigate to:
 
 ```
-http://127.0.0.1:8443/health
+https://127.0.0.1:8443/health
 ```
+
+> Your browser will show a security warning for the self-signed cert. Click **Advanced → Proceed to 127.0.0.1** — this only happens once.
 
 Expected response:
 
 ```json
-{"status":"ok","mt5Clients":0,"sseClients":0,"snapshots":0}
+{"status":"ok","mode":"local-wss","mt5Clients":0,"sseClients":0,"snapshots":0}
 ```
 
 ---
 
-### Step 6 — Keep the server running automatically (optional but recommended)
+### Step 7 — Keep the server running automatically (optional but recommended)
 
 Install PM2 to run the server as a background service that survives reboots:
 
@@ -147,7 +177,7 @@ pm2 restart mt5bridge
 
 ---
 
-### Step 7 — Expose server to the internet (local machine mode only)
+### Step 8 — Expose server to the internet (local machine mode only)
 
 If your Node.js server is running on your local PC and your website is hosted elsewhere, you need a tunnel so the outside world can reach your local server.
 
@@ -162,8 +192,10 @@ Place it in `C:\MT5Bridge\`, then run:
 
 ```cmd
 cd C:\MT5Bridge
-cloudflared tunnel --url http://localhost:8443
+cloudflared tunnel --url https://localhost:8443
 ```
+
+> Use `https://` not `http://` since the local server now speaks WSS.
 
 Cloudflare will print a public URL like:
 ```
@@ -178,7 +210,7 @@ Use this URL as your server address in `dashboard.html` and MT5 EA inputs.
 
 **Option B — Render.com (always-online, no tunnel needed)**
 
-If you deploy `server.js` to Render, your server is always online with a permanent URL.
+If you deploy `server.js` to Render, your server is always online with a permanent URL. On Render, the server automatically detects it is running remotely and switches to plain HTTP internally — Render handles TLS externally.
 
 1. Push your code to a GitHub repository:
 ```cmd
@@ -190,6 +222,13 @@ git remote add origin https://github.com/yourusername/mt5bridge.git
 git push -u origin main
 ```
 
+> **Do not push `cert.pem` or `key.pem` to GitHub** — add a `.gitignore` file:
+> ```
+> key.pem
+> cert.pem
+> node_modules/
+> ```
+
 2. Go to https://render.com → New Web Service → connect your GitHub repo.
 3. Settings:
    - Environment: `Node`
@@ -197,28 +236,29 @@ git push -u origin main
    - Start command: `node server.js`
 4. Render assigns a permanent URL like `https://mt5bridge.onrender.com`.
 
-> **Important for Render:** Add this line to `server.js` so it uses Render's assigned port:
-> ```javascript
-> const PORT = process.env.PORT || 8443;
-> ```
-> Then push the update before deploying.
-
 > **Free tier note:** Render's free tier spins down after 15 minutes of inactivity.  
-> Upgrade to the $7/month plan for always-on service.
+> Upgrade to the $7/month plan for always-on service.  
+> If the server is asleep, open `/health` in a browser first to wake it before connecting the EA.
 
 ---
 
 ## DLL Placement
 
-The compiled DLLs file (`mt5WebServerLiveDll.dll`,`libcrypto-3-x64.dll`,`libssl-3-x64.dll`) must be placed in MT5's Libraries folder.
+The following files must be placed in MT5's Libraries folder:
+
+- `mt5WebServerLiveDll.dll`
+- `libcrypto-3-x64.dll`
+- `libssl-3-x64.dll`
 
 **How to find the Libraries folder:**
 
 1. Open MT5
 2. Go to **File → Open Data Folder**
 3. Navigate to `MQL5\Libraries\`
-4. Paste `mt5WebServerLiveDll.dll`,`libcrypto-3-x64.dll`,`libssl-3-x64.dll` here
+4. Paste all three files here
 
+> **Note:** MT5 must be fully closed before replacing the DLL.  
+> If MT5 is open, it locks the DLL file and the new version will not load.
 
 The DLL connects to the Node.js server via WebSocket. It is imported automatically by the EA — no manual loading required.
 
@@ -252,7 +292,7 @@ Before attaching the EA, DLL imports must be enabled in MT5:
 
 | Input | Description |
 |-------|-------------|
-| `wsshost_` | The server hostname or IP address |
+| `wsshost_` | The server hostname or IP address — no `https://` prefix |
 | `wssport_` | The port number |
 | `authToken` | Authentication token (must match server config) |
 
@@ -262,17 +302,14 @@ Before attaching the EA, DLL imports must be enabled in MT5:
 
 | Scenario | `wsshost_` | `wssport_` |
 |----------|-----------|-----------|
-| Server running on the same PC as MT5 | `127.0.0.1` | `8443` |
+| Server running on the same PC as MT5 (local WSS) | `127.0.0.1` | `8443` |
 | Server on another PC on same network | Local IP e.g. `192.168.1.10` | `8443` |
 | Server via Cloudflare tunnel | e.g. `some-words.trycloudflare.com` | `443` |
 | Server hosted on Render.com | e.g. `mt5bridge.onrender.com` | `443` |
 | Server on a VPS with open port | VPS public IP or domain | Your chosen port |
 
-> **Rule of thumb:**  
-> - Use port `8443` when connecting directly (same machine or local network).  
-> - Use port `443` when connecting through any HTTPS host (Cloudflare, Render, VPS with reverse proxy).  
-> - The DLL compiled with `USE_TLS=1` supports WSS (secure WebSocket) required by HTTPS hosts.  
-> - The DLL compiled with `USE_TLS=0` supports plain WS, suitable for local connections only.
+> **Important:** `wsshost_` must be a hostname only — never include `https://` or `wss://`.  
+> The DLL (`USE_TLS=1`) always uses WSS. Port `8443` for local, port `443` for all external hosts.
 
 ---
 
@@ -280,8 +317,8 @@ Before attaching the EA, DLL imports must be enabled in MT5:
 
 | Port | Used For | Notes |
 |------|---------|-------|
-| `8443` | Local Node.js server | Default port in `server.js`. Change `const PORT = 8443` to use a different one. |
-| `443` | HTTPS / WSS external hosts | Standard HTTPS port. Used when connecting to Render, Cloudflare, or any hosted server. |
+| `8443` | Local Node.js server (WSS) | Default local port. Server uses self-signed cert on this port. |
+| `443` | HTTPS / WSS external hosts | Standard HTTPS port. Used for Render, Cloudflare, or any hosted server. |
 | `80` | Plain HTTP | Not used in this project. |
 
 **How ports work in this project:**
@@ -292,7 +329,7 @@ MT5 DLL  ──[wssport_]──►  Node.js server  ──[8443 or PORT]──�
 
 When your server is hosted externally (Render, Cloudflare), the external host listens on port `443` and internally forwards traffic to whatever port Node.js is using. You always connect to `443` from the EA — the host handles the rest.
 
-When running locally, both the EA and the browser connect directly to port `8443` on `127.0.0.1`.
+When running locally, both the EA and the browser connect directly to port `8443` on `127.0.0.1` using WSS.
 
 ---
 
@@ -302,13 +339,15 @@ When running locally, both the EA and the browser connect directly to port `8443
 
 ```
 MT5 + DLL + Node.js server all on one PC
+Server speaks WSS using self-signed cert
 Browser opens dashboard.html by double-clicking
 ```
 
 - `wsshost_` = `127.0.0.1`
 - `wssport_` = `8443`
-- `SSE_URL` in `dashboard.html` = `http://127.0.0.1:8443/stream`
-- No tunnel needed
+- `SSE_URL` in `dashboard.html` = `https://127.0.0.1:8443/stream`
+- Requires `cert.pem` + `key.pem` in `C:\MT5Bridge\`
+- Browser will show a one-time security warning for the self-signed cert — click Proceed
 - Only you can see the dashboard
 
 ---
@@ -324,7 +363,7 @@ Website hosted elsewhere fetches from tunnel URL
 - `wsshost_` = `some-words.trycloudflare.com`
 - `wssport_` = `443`
 - `SSE_URL` in `dashboard.html` = `https://some-words.trycloudflare.com/stream`
-- DLL must be compiled with `USE_TLS=1`
+- Tunnel command: `cloudflared tunnel --url https://localhost:8443`
 - URL changes on every cloudflared restart (use named tunnel for permanent URL)
 
 ---
@@ -340,7 +379,7 @@ Website fetches from Render URL
 - `wsshost_` = `mt5bridge.onrender.com`
 - `wssport_` = `443`
 - `SSE_URL` in `dashboard.html` = `https://mt5bridge.onrender.com/stream`
-- DLL must be compiled with `USE_TLS=1`
+- No cert files needed — Render handles TLS
 - Server is always online (paid plan) or sleeps after 15min (free plan)
 
 ---
@@ -350,22 +389,25 @@ Website fetches from Render URL
 ### Every time you start
 
 - [ ] Run `node server.js` in `C:\MT5Bridge\` (or confirm PM2 has it running)
-- [ ] If using Cloudflare tunnel: run `cloudflared tunnel --url http://localhost:8443`
+- [ ] If using Cloudflare tunnel: run `cloudflared tunnel --url https://localhost:8443`
 - [ ] Open MT5 and confirm the EA is attached to a chart
-- [ ] Check `http://127.0.0.1:8443/health` — `mt5Clients` should be `1`
+- [ ] Check `https://127.0.0.1:8443/health` (local) or `https://[render-url]/health` — `mt5Clients` should be `1`
 - [ ] Open `dashboard.html` in browser — data should appear within seconds
 
 ### Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| `mt5Clients: 0` on health check | EA not connected | Check EA inputs, confirm DLL is in Libraries folder |
-| `BridgeInit failed: resolve` | Wrong hostname in `wsshost_` | Remove `https://` — use hostname only |
-| `BridgeInit failed: handshake declined` | Plain WS DLL connecting to HTTPS host | Use TLS-compiled DLL (`USE_TLS=1`) |
-| `BridgeInit failed: certificate verify` | Double handshake bug in DLL code | Ensure `tls.handshake()` is called only once |
+| `mt5Clients: 0` on health check | EA not connected | Check EA inputs, confirm all 3 DLL files are in Libraries folder |
+| `BridgeInit failed: resolve` | Wrong hostname in `wsshost_` | Remove `https://` — use hostname only e.g. `127.0.0.1` |
+| `BridgeInit failed: handshake declined` | Server not running or wrong port | Confirm server is running and port matches |
+| `BridgeInit failed: packet length too long` | TLS DLL connecting to plain HTTP server | Confirm server is in WSS mode (cert files present locally, or use Render) |
+| `BridgeInit failed: certificate verify` | Double `tls.handshake()` call in DLL | Ensure `tls.handshake()` is called only once in DLL source |
+| Server exits on startup with cert error | `cert.pem` / `key.pem` missing | Run the OpenSSL command in Step 4 |
+| Browser security warning on `/health` | Self-signed cert | Click Advanced → Proceed — one-time only |
 | Dashboard shows "Connecting…" forever | Wrong `SSE_URL` in `dashboard.html` | Update URL to match current server address |
 | `/stream` loads forever via Cloudflare | Cloudflare buffering SSE | Ensure `X-Accel-Buffering: no` header is set in `server.js` |
-| Server stops after 15 minutes on Render | Free tier spin-down | Upgrade to paid plan or use Cloudflare tunnel instead |
+| Server stops after 15 minutes on Render | Free tier spin-down | Wake via `/health` in browser, or upgrade to paid plan |
 
 ---
 
@@ -380,14 +422,14 @@ The `dashboard.html` file is the browser-side of the pipeline. It connects to th
 Open `dashboard.html` in any text editor and find this line near the bottom inside the `<script>` block:
 
 ```javascript
-const SSE_URL = "http://127.0.0.1:8443/stream";
+const SSE_URL = "https://127.0.0.1:8443/stream";
 ```
 
 Change it depending on where your server is running:
 
 | Scenario | `SSE_URL` value |
 |----------|----------------|
-| Local — server and browser on same PC | `http://127.0.0.1:8443/stream` |
+| Local — server and browser on same PC | `https://127.0.0.1:8443/stream` |
 | Cloudflare tunnel | `https://your-words.trycloudflare.com/stream` |
 | Render.com | `https://mt5bridge.onrender.com/stream` |
 | VPS with domain | `https://yourdomain.com/stream` |
@@ -395,9 +437,11 @@ Change it depending on where your server is running:
 > **Tip:** If you want one file that works both locally and on your hosted website without editing the URL each time, use this auto-detection pattern:
 > ```javascript
 > const SSE_URL = location.protocol === "file:"
->   ? "http://127.0.0.1:8443/stream"            // double-clicked locally
+>   ? "https://127.0.0.1:8443/stream"           // double-clicked locally
 >   : "https://mt5bridge.onrender.com/stream";   // served from website
 > ```
+
+> **Browser security warning (local only):** When opening `dashboard.html` locally with the self-signed cert, the browser may block the SSE connection. Fix it by visiting `https://127.0.0.1:8443/health` directly first, clicking Proceed, then reloading `dashboard.html`.
 
 ---
 
