@@ -92,15 +92,15 @@ This creates `package.json` and downloads the WebSocket library into `node_modul
 
 The server uses WSS (secure WebSocket) locally via a self-signed certificate. Generate it once — it lasts 10 years.
 
-Open **PowerShell** in `C:\MT5Bridge\` and run:
+Open **CMD** in `C:\MT5Bridge\` and run:
 
-```powershell
-& "C:\Program Files\OpenSSL-Win64\bin\openssl.exe" req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 3650 -nodes -subj "/CN=localhost"
+```CMD
+"C:\Program Files\OpenSSL-Win64\bin\openssl.exe" req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 3650 -nodes -subj "/CN=localhost"
 ```
 
 Confirm both files were created:
 
-```powershell
+```CMD
 dir C:\MT5Bridge\*.pem
 ```
 
