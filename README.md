@@ -210,14 +210,14 @@ git push -u origin main
 
 ## DLL Placement
 
-The compiled DLL file (`mt5WebServerLiveDll.dll`) must be placed in MT5's Libraries folder.
+The compiled DLLs file (`mt5WebServerLiveDll.dll`,`libcrypto-3-x64.dll`,`libssl-3-x64.dll`) must be placed in MT5's Libraries folder.
 
 **How to find the Libraries folder:**
 
 1. Open MT5
 2. Go to **File → Open Data Folder**
 3. Navigate to `MQL5\Libraries\`
-4. Paste `mt5WebServerLiveDll.dll` here
+4. Paste `mt5WebServerLiveDll.dll`,`libcrypto-3-x64.dll`,`libssl-3-x64.dll` here
 
 
 The DLL connects to the Node.js server via WebSocket. It is imported automatically by the EA — no manual loading required.
